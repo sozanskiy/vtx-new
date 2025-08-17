@@ -43,7 +43,7 @@ def main(argv: List[str]) -> int:
 
     # Import after env var for sampler selection
     from app.hw_capture import get_sampler
-    from app.scanner import band_metrics
+    from app.scanner import band_metrics_both
 
     cfg_path = Path(args.plan)
     cfg = _load_plan(cfg_path) if cfg_path.exists() else {}
@@ -69,20 +69,20 @@ def main(argv: List[str]) -> int:
     try:
         while True:
             t0 = time.time()
-            results: List[Tuple[int, float, float]] = []  # (freq, power_db, snr_db)
+            results: List[Tuple[int, float, float, float]] = []  # (freq, power_db, snr_mean_db, snr_peak_db)
             for f in freqs:
                 num_samples = max(1024, int(sample_rate * (dwell_ms / 1000.0)))
                 iq = sampler.capture(f, sample_rate, num_samples)
-                p_db, snr_db = band_metrics(iq, sample_rate, channel_bw_hz, dc_guard_hz=dc_guard_hz)
-                results.append((f, float(p_db), float(snr_db)))
+                p_db, snr_mean_db, snr_peak_db = band_metrics_both(iq, sample_rate, channel_bw_hz, dc_guard_hz=dc_guard_hz)
+                results.append((f, float(p_db), float(snr_mean_db), float(snr_peak_db)))
             dt = time.time() - t0
             # Sort by SNR desc and print top 8
             results.sort(key=lambda r: r[2], reverse=True)
             top = results[:8]
             ts = time.strftime("%H:%M:%S")
-            print(f"[{ts}] sweep {loop_idx} time={dt*1000:.0f} ms  top by SNR:")
-            for (f, p_db, snr_db) in top:
-                print(f"  {f/1e6:8.1f} MHz  SNR={snr_db:6.2f} dB  Power={p_db:7.2f} dB")
+            print(f"[{ts}] sweep {loop_idx} time={dt*1000:.0f} ms  top by mean SNR:")
+            for (f, p_db, snr_mean_db, snr_peak_db) in top:
+                print(f"  {f/1e6:8.1f} MHz  SNR_mean={snr_mean_db:6.2f} dB  SNR_peak={snr_peak_db:6.2f} dB  Power={p_db:7.2f} dB")
             loop_idx += 1
             if args.loops and loop_idx >= args.loops:
                 break

@@ -55,6 +55,35 @@ def band_metrics(iq: np.ndarray, sample_rate_hz: float, channel_bw_hz: float, dc
     return float(band_power_db), float(snr_db)
 
 
+def band_metrics_both(iq: np.ndarray, sample_rate_hz: float, channel_bw_hz: float, dc_guard_hz: float = 150e3) -> Tuple[float, float, float]:
+    if iq.dtype != np.complex64 and iq.dtype != np.complex128:
+        iq = iq.astype(np.complex64)
+    iq = iq - np.mean(iq)
+    n = len(iq)
+    if n <= 0:
+        return -120.0, 0.0, 0.0
+    win = np.hanning(n)
+    X = np.fft.fft(iq * win)
+    psd = (np.abs(X) ** 2) / (np.sum(win ** 2))
+    freqs = np.fft.fftfreq(n, d=1.0 / sample_rate_hz)
+    nyq = sample_rate_hz / 2.0
+    half_bw = min(channel_bw_hz / 2.0, nyq * 0.70)
+    abs_freqs = np.abs(freqs)
+    m_band = (abs_freqs <= half_bw)
+    m_guard = (abs_freqs < dc_guard_hz)
+    m_use = m_band & (~m_guard)
+    band_bins = psd[m_use]
+    band_lin = float(np.mean(band_bins)) if band_bins.size else 1e-12
+    peak_lin = float(np.max(band_bins)) if band_bins.size else 1e-12
+    m_noise = (abs_freqs >= half_bw * 1.05) & (abs_freqs <= min(nyq * 0.98, half_bw * 1.30))
+    noise_bins = psd[m_noise]
+    noise_lin = float(np.median(noise_bins)) if noise_bins.size else 1e-12
+    band_power_db = 10.0 * np.log10(band_lin + 1e-20)
+    snr_mean_db = 10.0 * np.log10((band_lin + 1e-20) / (noise_lin + 1e-20))
+    snr_peak_db = 10.0 * np.log10((peak_lin + 1e-20) / (noise_lin + 1e-20))
+    return float(band_power_db), float(snr_mean_db), float(snr_peak_db)
+
+
 @dataclass
 class ScannerConfig:
     sample_rate_hz: float = 8e6
