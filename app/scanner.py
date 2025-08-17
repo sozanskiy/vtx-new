@@ -18,7 +18,7 @@ from .hw_capture import get_sampler, IQSampler
 
 
 def band_metrics(iq: np.ndarray, sample_rate_hz: float, channel_bw_hz: float, dc_guard_hz: float = 50e3) -> Tuple[float, float]:
-    """Compute band power and SNR with DC mitigation.
+    """Compute band power and SNR with DC mitigation for complex baseband IQ.
 
     Returns (band_power_db, snr_db).
     """
@@ -26,25 +26,26 @@ def band_metrics(iq: np.ndarray, sample_rate_hz: float, channel_bw_hz: float, dc
         iq = iq.astype(np.complex64)
     # 1) mean removal
     iq = iq - np.mean(iq)
-    # 2) window + FFT power
+    # 2) window + complex FFT power
     n = len(iq)
     if n <= 0:
         return -120.0, 0.0
     win = np.hanning(n)
-    X = np.fft.rfft(iq * win)
+    X = np.fft.fft(iq * win)
     psd = (np.abs(X) ** 2) / (np.sum(win ** 2))
-    freqs = np.fft.rfftfreq(n, d=1.0 / sample_rate_hz)
+    freqs = np.fft.fftfreq(n, d=1.0 / sample_rate_hz)
     # in-band mask (±bw/2)
     half_bw = channel_bw_hz / 2.0
-    m_band = (np.abs(freqs) <= half_bw)
+    abs_freqs = np.abs(freqs)
+    m_band = (abs_freqs <= half_bw)
     # DC guard mask
-    m_guard = (np.abs(freqs) < dc_guard_hz)
+    m_guard = (abs_freqs < dc_guard_hz)
     m_use = m_band & (~m_guard)
     band_power = 10.0 * np.log10(np.sum(psd[m_use]) + 1e-20)
-    # noise from just outside the band (upper edge)
-    edge_lo = (freqs > half_bw) & (freqs <= half_bw * 1.25)
-    noise_bins = psd[edge_lo]
-    noise_dbm = 10.0 * np.log10(np.median(noise_bins) * max(1, len(noise_bins)) + 1e-20)
+    # noise from a ring just outside the band on both sides
+    m_noise = (abs_freqs >= half_bw * 1.05) & (abs_freqs <= half_bw * 1.25)
+    noise_bins = psd[m_noise]
+    noise_dbm = 10.0 * np.log10((np.median(noise_bins) * max(1, len(noise_bins))) + 1e-20) if noise_bins.size else -120.0
     snr_db = float(band_power - noise_dbm)
     return float(band_power), snr_db
 
