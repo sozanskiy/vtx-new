@@ -9,6 +9,11 @@ import time
 from pathlib import Path
 from typing import List, Tuple
 
+# Ensure project root (containing `app/`) is on sys.path
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 
 def _load_plan(cfg_path: Path) -> dict:
     try:
