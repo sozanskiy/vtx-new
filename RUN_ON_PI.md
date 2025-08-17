@@ -40,6 +40,13 @@ UI: http://<pi-ip>:8081
   ```bash
   bash scripts/run_api_dev.sh
   ```
+- Simple console scanner (diagnostic):
+  ```bash
+  # Synthetic (no hardware)
+  python3 scripts/scan_58g_console.py --loops 3
+  # Hardware via HackRF (SoapySDR)
+  python3 scripts/scan_58g_console.py --hw --loops 3
+  ```
 - Toggle hardware capture:
   - API service uses `RER_USE_HW=1` by default. To force synthetic mode:
     ```bash
