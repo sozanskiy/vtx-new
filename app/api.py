@@ -6,6 +6,7 @@ import os
 import signal
 import time
 from dataclasses import dataclass, field
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set
@@ -66,6 +67,19 @@ class AppState:
 state = AppState()
 
 app = FastAPI(title="RER-Kilo API", version="0.1.0")
+@app.on_event("startup")
+async def _on_startup() -> None:
+    # Ensure DB schema exists and preload config
+    try:
+        init_db()
+    except Exception:
+        pass
+    try:
+        cfg = await _load_config(state.config_path)
+        state.config = cfg
+    except Exception:
+        pass
+
 
 
 @app.get("/health")
@@ -81,7 +95,12 @@ async def health() -> Dict[str, str]:
 
 @app.get("/candidates")
 async def get_candidates(limit: int = 10) -> List[Candidate]:
-    rows = list_top_candidates(limit)
+    try:
+        rows = list_top_candidates(limit)
+    except sqlite3.OperationalError:
+        # Initialize DB on demand if table is missing
+        init_db()
+        rows = []
     return [Candidate(
         freq_hz=int(r["freq_hz"]),
         snr_db=float(r["snr_db"]),
