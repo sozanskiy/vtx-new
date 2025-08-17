@@ -14,9 +14,6 @@ import os
 import time
 from typing import AsyncGenerator, Optional
 
-import numpy as np
-import cv2
-
 try:
     import zmq
     import zmq.asyncio
@@ -28,60 +25,67 @@ ZMQ_ENDPOINT = os.environ.get("RER_FRAMES_ZMQ", "tcp://127.0.0.1:5556")
 ZMQ_TOPIC = os.environ.get("RER_FRAMES_TOPIC", "frames").encode()
 
 
-async def _zmq_frame_stream(timeout_first_frame_s: float = 1.0):
+async def _create_zmq_stream(timeout_first_frame_s: float = 1.0):
+    """Return an async generator for ZMQ frames, or None if unavailable/timed out."""
     if zmq is None:
         return None
     ctx = zmq.asyncio.Context.instance()
     sub = ctx.socket(zmq.SUB)
-    try:
-        sub.setsockopt(zmq.SUBSCRIBE, ZMQ_TOPIC)
-        sub.connect(ZMQ_ENDPOINT)
-        # Wait for first frame with timeout
-        first_deadline = time.time() + timeout_first_frame_s
-        while True:
-            poller = zmq.asyncio.Poller()
-            poller.register(sub, zmq.POLLIN)
-            remaining = max(0.0, first_deadline - time.time())
-            events = dict(await poller.poll(timeout=remaining * 1000))
-            if sub in events and events[sub] & zmq.POLLIN:
-                parts = await sub.recv_multipart()
-                # Expect: [topic, meta_json, frame_bytes]
-                if len(parts) >= 3:
-                    _, meta_raw, payload = parts[0], parts[1], parts[2]
-                    try:
-                        meta = json.loads(meta_raw.decode("utf-8"))
-                        width = int(meta.get("width", 320))
-                        height = int(meta.get("height", 240))
-                        fmt = str(meta.get("format", "gray8"))
-                        yield (payload, width, height, fmt)
-                        break
-                    except Exception:
-                        continue
-            if time.time() >= first_deadline:
-                return None
 
-        # After first frame, continue without strict timeout
-        while True:
-            parts = await sub.recv_multipart()
-            if len(parts) < 3:
-                continue
-            _, meta_raw, payload = parts[0], parts[1], parts[2]
-            try:
-                meta = json.loads(meta_raw.decode("utf-8"))
-                width = int(meta.get("width", 320))
-                height = int(meta.get("height", 240))
-                fmt = str(meta.get("format", "gray8"))
-                yield (payload, width, height, fmt)
-            except Exception:
-                continue
-    finally:
+    async def gen():
         try:
-            sub.close(0)
-        except Exception:
-            pass
+            sub.setsockopt(zmq.SUBSCRIBE, ZMQ_TOPIC)
+            sub.connect(ZMQ_ENDPOINT)
+            # Wait for first frame with timeout
+            first_deadline = time.time() + timeout_first_frame_s
+            while True:
+                poller = zmq.asyncio.Poller()
+                poller.register(sub, zmq.POLLIN)
+                remaining = max(0.0, first_deadline - time.time())
+                events = dict(await poller.poll(timeout=remaining * 1000))
+                if sub in events and events[sub] & zmq.POLLIN:
+                    parts = await sub.recv_multipart()
+                    # Expect: [topic, meta_json, frame_bytes]
+                    if len(parts) >= 3:
+                        _, meta_raw, payload = parts[0], parts[1], parts[2]
+                        try:
+                            meta = json.loads(meta_raw.decode("utf-8"))
+                            width = int(meta.get("width", 320))
+                            height = int(meta.get("height", 240))
+                            fmt = str(meta.get("format", "gray8"))
+                            yield (payload, width, height, fmt)
+                            break
+                        except Exception:
+                            continue
+                if time.time() >= first_deadline:
+                    return
+
+            # After first frame, continue without strict timeout
+            while True:
+                parts = await sub.recv_multipart()
+                if len(parts) < 3:
+                    continue
+                _, meta_raw, payload = parts[0], parts[1], parts[2]
+                try:
+                    meta = json.loads(meta_raw.decode("utf-8"))
+                    width = int(meta.get("width", 320))
+                    height = int(meta.get("height", 240))
+                    fmt = str(meta.get("format", "gray8"))
+                    yield (payload, width, height, fmt)
+                except Exception:
+                    continue
+        finally:
+            try:
+                sub.close(0)
+            except Exception:
+                pass
+
+    return gen()
 
 
 def _encode_jpeg_from_frame(payload: bytes, width: int, height: int, fmt: str) -> Optional[bytes]:
+    import numpy as np  # lazy import to avoid startup failures if numpy unavailable
+    import cv2  # lazy import to avoid startup failures if OpenCV unavailable
     if fmt == "gray8":
         arr = np.frombuffer(payload, dtype=np.uint8)
         if arr.size != width * height:
@@ -102,6 +106,8 @@ def _encode_jpeg_from_frame(payload: bytes, width: int, height: int, fmt: str) -
 
 
 async def synthetic_mjpeg_stream(boundary: str = "frame") -> AsyncGenerator[bytes, None]:
+    import numpy as np  # lazy import
+    import cv2  # lazy import
     t0 = time.time()
     frame_idx = 0
     while True:
@@ -126,7 +132,7 @@ async def synthetic_mjpeg_stream(boundary: str = "frame") -> AsyncGenerator[byte
 
 
 async def mjpeg_stream(boundary: str = "frame") -> AsyncGenerator[bytes, None]:
-    stream = await _zmq_frame_stream(timeout_first_frame_s=1.0)
+    stream = await _create_zmq_stream(timeout_first_frame_s=1.0)
     if stream is None:
         async for chunk in synthetic_mjpeg_stream(boundary):
             yield chunk

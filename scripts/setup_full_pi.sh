@@ -18,7 +18,7 @@ apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
   hackrf gnuradio gr-osmosdr ffmpeg \
   python3-venv python3-pip python3-opencv python3-numpy python3-scipy python3-zmq \
-  soapysdr-module-hackrf \
+  soapysdr-module-hackrf python3-soapysdr \
   curl ca-certificates \
   chromium-browser xserver-xorg xinit unclutter
 
