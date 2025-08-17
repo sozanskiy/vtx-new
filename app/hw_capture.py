@@ -38,9 +38,22 @@ class SoapyHackRFSampler(IQSampler):
         self.SoapySDR = SoapySDR
         self.sdr = SoapySDR.Device({"driver": "hackrf"})
         self.rx_chan = 0
-        # Default gains; tweak on Pi
+        # Set per-component gains for better sensitivity (safe fallbacks)
         try:
-            self.sdr.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, 20)
+            # Enable on-board RF amp if available (boolean on HackRF)
+            try:
+                self.sdr.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "AMP", 1)  # type: ignore[arg-type]
+            except Exception:
+                pass
+            # LNA (front-end) and VGA (baseband) gains; moderate to avoid overload
+            try:
+                self.sdr.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "LNA", 28)
+            except Exception:
+                pass
+            try:
+                self.sdr.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "VGA", 16)
+            except Exception:
+                pass
         except Exception:
             pass
         self.stream = None

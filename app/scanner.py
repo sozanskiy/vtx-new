@@ -17,7 +17,7 @@ from .storage import list_top_candidates, upsert_candidate
 from .hw_capture import get_sampler, IQSampler
 
 
-def band_metrics(iq: np.ndarray, sample_rate_hz: float, channel_bw_hz: float, dc_guard_hz: float = 50e3) -> Tuple[float, float]:
+def band_metrics(iq: np.ndarray, sample_rate_hz: float, channel_bw_hz: float, dc_guard_hz: float = 150e3) -> Tuple[float, float]:
     """Compute band power and SNR for complex baseband IQ.
 
     - In-band region: clamp to ≤ 0.75×Nyquist to leave room for a noise ring
@@ -36,9 +36,9 @@ def band_metrics(iq: np.ndarray, sample_rate_hz: float, channel_bw_hz: float, dc
     X = np.fft.fft(iq * win)
     psd = (np.abs(X) ** 2) / (np.sum(win ** 2))
     freqs = np.fft.fftfreq(n, d=1.0 / sample_rate_hz)
-    # In-band mask (±bw/2), clamped to 0.75×Nyquist
+    # In-band mask (±bw/2), clamped to 0.7×Nyquist (leave margin)
     nyq = sample_rate_hz / 2.0
-    half_bw = min(channel_bw_hz / 2.0, nyq * 0.75)
+    half_bw = min(channel_bw_hz / 2.0, nyq * 0.70)
     abs_freqs = np.abs(freqs)
     m_band = (abs_freqs <= half_bw)
     # DC guard mask
@@ -46,8 +46,8 @@ def band_metrics(iq: np.ndarray, sample_rate_hz: float, channel_bw_hz: float, dc
     m_use = m_band & (~m_guard)
     # Power as mean per bin to compare consistently with noise mean/median
     band_lin = float(np.mean(psd[m_use])) if np.any(m_use) else 1e-12
-    # Noise from a high‑freq ring near Nyquist
-    m_noise = (abs_freqs >= nyq * 0.875) & (abs_freqs <= nyq * 0.98)
+    # Noise as near-band ring just outside the in-band window
+    m_noise = (abs_freqs >= half_bw * 1.05) & (abs_freqs <= min(nyq * 0.98, half_bw * 1.30))
     noise_bins = psd[m_noise]
     noise_lin = float(np.median(noise_bins)) if noise_bins.size else 1e-12
     band_power_db = 10.0 * np.log10(band_lin + 1e-20)
