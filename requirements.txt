@@ -1,0 +1,9 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0,<3
+numpy>=1.26.0
+scipy>=1.11.0
+pyzmq>=26.0.0
+opencv-python-headless>=4.9.0
+orjson>=3.10.0
+# Optional (Pi hardware capture): SoapySDR (install via system packages)

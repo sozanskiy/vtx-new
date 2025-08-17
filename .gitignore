@@ -1,0 +1,53 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor/project files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python test cache
+.pytest_cache/
+.cache/
+
+# Logs
+*.log
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Node/Nuxt build artifacts
+node_modules/
+.nuxt/
+dist/
+*.log
+
+# Local environment files
+.env
+.env.*
+
+# Systemd unit files (if generated locally)
+*.service
+
+# SQLite database (if used for local dev)
+*.db
+*.sqlite3
+
+# Misc
+*.bak
+*.tmp
+*.orig
