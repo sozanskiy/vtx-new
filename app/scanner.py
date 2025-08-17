@@ -18,9 +18,11 @@ from .hw_capture import get_sampler, IQSampler
 
 
 def band_metrics(iq: np.ndarray, sample_rate_hz: float, channel_bw_hz: float, dc_guard_hz: float = 50e3) -> Tuple[float, float]:
-    """Compute band power and SNR with DC mitigation for complex baseband IQ.
+    """Compute band power and SNR for complex baseband IQ.
 
-    Returns (band_power_db, snr_db).
+    - In-band region: clamp to ≤ 0.75×Nyquist to leave room for a noise ring
+    - Noise region: high‑frequency ring near Nyquist (e.g., 0.875–0.98×Nyquist)
+    Returns (band_power_db, snr_db) in relative dB (not absolute dBm).
     """
     if iq.dtype != np.complex64 and iq.dtype != np.complex128:
         iq = iq.astype(np.complex64)
@@ -34,20 +36,23 @@ def band_metrics(iq: np.ndarray, sample_rate_hz: float, channel_bw_hz: float, dc
     X = np.fft.fft(iq * win)
     psd = (np.abs(X) ** 2) / (np.sum(win ** 2))
     freqs = np.fft.fftfreq(n, d=1.0 / sample_rate_hz)
-    # in-band mask (±bw/2)
-    half_bw = channel_bw_hz / 2.0
+    # In-band mask (±bw/2), clamped to 0.75×Nyquist
+    nyq = sample_rate_hz / 2.0
+    half_bw = min(channel_bw_hz / 2.0, nyq * 0.75)
     abs_freqs = np.abs(freqs)
     m_band = (abs_freqs <= half_bw)
     # DC guard mask
     m_guard = (abs_freqs < dc_guard_hz)
     m_use = m_band & (~m_guard)
-    band_power = 10.0 * np.log10(np.sum(psd[m_use]) + 1e-20)
-    # noise from a ring just outside the band on both sides
-    m_noise = (abs_freqs >= half_bw * 1.05) & (abs_freqs <= half_bw * 1.25)
+    # Power as mean per bin to compare consistently with noise mean/median
+    band_lin = float(np.mean(psd[m_use])) if np.any(m_use) else 1e-12
+    # Noise from a high‑freq ring near Nyquist
+    m_noise = (abs_freqs >= nyq * 0.875) & (abs_freqs <= nyq * 0.98)
     noise_bins = psd[m_noise]
-    noise_dbm = 10.0 * np.log10((np.median(noise_bins) * max(1, len(noise_bins))) + 1e-20) if noise_bins.size else -120.0
-    snr_db = float(band_power - noise_dbm)
-    return float(band_power), snr_db
+    noise_lin = float(np.median(noise_bins)) if noise_bins.size else 1e-12
+    band_power_db = 10.0 * np.log10(band_lin + 1e-20)
+    snr_db = 10.0 * np.log10((band_lin + 1e-20) / (noise_lin + 1e-20))
+    return float(band_power_db), float(snr_db)
 
 
 @dataclass
