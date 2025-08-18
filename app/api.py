@@ -347,16 +347,22 @@ async def _start_demod(freq_hz: int) -> None:
         env = os.environ.copy()
         endpoint = env.get("RER_FRAMES_ZMQ", "tcp://127.0.0.1:5556")
         topic = env.get("RER_FRAMES_TOPIC", "frames")
-        # Prefer hardware demod; fall back to mock if it fails to start
+        # Prefer line-timed demod; fall back to simple envelope, then mock
         try:
             state.demod_proc = subprocess.Popen([
-                sys.executable, "-m", "app.demod_analog", "--freq", str(freq_hz), "--sample-rate", "8000000",
+                sys.executable, "-m", "app.demod_lines", "--freq", str(freq_hz), "--sample-rate", "8000000",
                 "--endpoint", endpoint, "--topic", topic, "--fps", "10", "--width", "320", "--height", "240"
             ])
         except Exception:
-            state.demod_proc = subprocess.Popen([
-                sys.executable, "-m", "app.demod_mock", "--freq", str(freq_hz), "--endpoint", endpoint, "--topic", topic, "--fps", "10"
-            ])
+            try:
+                state.demod_proc = subprocess.Popen([
+                    sys.executable, "-m", "app.demod_analog", "--freq", str(freq_hz), "--sample-rate", "8000000",
+                    "--endpoint", endpoint, "--topic", topic, "--fps", "10", "--width", "320", "--height", "240"
+                ])
+            except Exception:
+                state.demod_proc = subprocess.Popen([
+                    sys.executable, "-m", "app.demod_mock", "--freq", str(freq_hz), "--endpoint", endpoint, "--topic", topic, "--fps", "10"
+                ])
     except Exception:
         state.demod_proc = None
 
