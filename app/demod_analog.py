@@ -14,6 +14,30 @@ import zmq
 from .hw_capture import get_sampler
 
 
+def fm_discriminator(iq: np.ndarray) -> np.ndarray:
+    """Basic FM demodulation using phase difference discriminator.
+
+    Returns float32 baseband where amplitude corresponds to instantaneous frequency.
+    """
+    if iq.size < 2:
+        return np.zeros(0, dtype=np.float32)
+    d = iq[1:] * np.conj(iq[:-1])
+    return np.angle(d).astype(np.float32)
+
+
+def one_pole_deemphasis(x: np.ndarray, alpha: float = 0.1) -> np.ndarray:
+    """Simple de-emphasis (one-pole IIR low-pass)."""
+    if x.size == 0:
+        return x.astype(np.float32)
+    y = np.empty_like(x, dtype=np.float32)
+    acc = float(x[0])
+    a = float(alpha)
+    for i in range(x.size):
+        acc = (1.0 - a) * acc + a * float(x[i])
+        y[i] = acc
+    return y
+
+
 def build_frame_from_envelope(
     envelope: np.ndarray,
     sample_rate_hz: float,
@@ -58,14 +82,15 @@ def run(freq_hz: int, endpoint: str, topic: str, sample_rate_hz: float, width: i
         while not stop:
             # Capture enough IQ for one frame (single burst capture)
             iq = sampler.capture(freq_hz, sample_rate_hz, samples_per_frame)
-            # Envelope demod (magnitude)
-            env = np.abs(iq).astype(np.float32)
-            # Light smoothing by moving average over small window
-            if env.size >= 64:
+            # FM demod to recover baseband video (AM envelope alone looks like noise)
+            base = fm_discriminator(iq)
+            # Optional de-emphasis and gentle smoothing
+            base = one_pole_deemphasis(base, alpha=0.05)
+            if base.size >= 64:
                 k = 64
                 kernel = np.ones(k, dtype=np.float32) / k
-                env = np.convolve(env, kernel, mode='same')
-            img = build_frame_from_envelope(env, sample_rate_hz, width, height)
+                base = np.convolve(base, kernel, mode='same')
+            img = build_frame_from_envelope(base, sample_rate_hz, width, height)
             meta = {"width": width, "height": height, "format": "gray8", "ts": time.time(), "freq_hz": freq_hz}
             pub.send_multipart([topic_b, json.dumps(meta).encode("utf-8"), img.tobytes()])
             time.sleep(frame_period * 0.5)

@@ -14,6 +14,13 @@ import zmq
 from .hw_capture import get_sampler
 
 
+def fm_discriminator(iq: np.ndarray) -> np.ndarray:
+    if iq.size < 2:
+        return np.zeros(0, dtype=np.float32)
+    d = iq[1:] * np.conj(iq[:-1])
+    return np.angle(d).astype(np.float32)
+
+
 def lowpass_ma(x: np.ndarray, taps: int) -> np.ndarray:
     if taps <= 1:
         return x
@@ -92,7 +99,8 @@ def run(freq_hz: int, endpoint: str, topic: str, sample_rate_hz: float, width: i
     try:
         while not stop:
             iq = sampler.capture(freq_hz, sample_rate_hz, samples_per_iter)
-            env = np.abs(iq).astype(np.float32)
+            # Recover baseband video using FM discriminator
+            env = fm_discriminator(iq)
             env = lowpass_ma(env, taps=256)
             # Append to rolling buffer
             if env.size >= buf.size:
