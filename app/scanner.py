@@ -141,7 +141,7 @@ class Scanner:
                     # Measure: if sampler is synthetic, result will emulate; if HW, this captures real IQ
                     num_samples = max(1024, int(self.sample_rate_hz * (self.dwell_ms / 1000.0)))
                     iq = sampler.capture(f, self.sample_rate_hz, num_samples)
-                    # Compute metrics
+                    # Compute metrics (mean-based SNR)
                     band_power_db, snr = band_metrics(
                         iq,
                         sample_rate_hz=self.sample_rate_hz,
@@ -160,7 +160,7 @@ class Scanner:
                     # Upsert DB
                     upsert_candidate(
                         freq_hz=f,
-                        snr_db=round(float(self.ema_snr_db[f]), 2),
+                        snr_db=round(float(snr), 2),
                         power_dbm=round(float(self.ema_power_dbm[f]), 2),
                         status=status,
                         ema_alpha=self.ema_alpha,
