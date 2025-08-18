@@ -155,21 +155,33 @@ async def synthetic_mjpeg_stream(boundary: str = "frame") -> AsyncGenerator[byte
 
 
 async def mjpeg_stream(boundary: str = "frame") -> AsyncGenerator[bytes, None]:
-    stream = await _create_zmq_stream(timeout_first_frame_s=1.0)
-    if stream is None:
-        async for chunk in synthetic_mjpeg_stream(boundary):
-            yield chunk
-        return
-    # ZMQ-backed loop
-    async for payload, width, height, fmt in stream:  # type: ignore
-        jpg = _encode_jpeg_from_frame(payload, width, height, fmt)
-        if jpg is None:
+    """Yield MJPEG chunks, preferring real demod frames when available.
+
+    Behavior:
+    - Attempt to connect to ZMQ and wait briefly for a first frame.
+    - If unavailable, yield a synthetic frame and retry, so we can switch to
+      real frames as soon as they start without forcing the client to reconnect.
+    """
+    while True:
+        stream = await _create_zmq_stream(timeout_first_frame_s=2.0)
+        if stream is None:
+            # Yield a single synthetic frame, then retry ZMQ
+            async for chunk in synthetic_mjpeg_stream(boundary):
+                yield chunk
+                break
+            # Small pause before retry to avoid hot loop
+            await asyncio.sleep(0.1)
             continue
-        chunk = (
-            f"--{boundary}\r\n"
-            f"Content-Type: image/jpeg\r\n"
-            f"Content-Length: {len(jpg)}\r\n\r\n"
-        ).encode() + jpg + b"\r\n"
-        yield chunk
+        # ZMQ-backed loop; if it ever errors out, we'll fall back on next iteration
+        async for payload, width, height, fmt in stream:  # type: ignore
+            jpg = _encode_jpeg_from_frame(payload, width, height, fmt)
+            if jpg is None:
+                continue
+            chunk = (
+                f"--{boundary}\r\n"
+                f"Content-Type: image/jpeg\r\n"
+                f"Content-Length: {len(jpg)}\r\n\r\n"
+            ).encode() + jpg + b"\r\n"
+            yield chunk
 
 
