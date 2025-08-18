@@ -106,9 +106,9 @@ Checklist:
 
 Checklist:
 
-- [ ] HackRF capture loop with stable retune cadence
+- [x] HackRF capture loop with stable retune cadence
 - [x] Band metrics with DC mitigation and parameters (`dc_guard_hz`, etc.)
-- [x] EMA + N‑of‑M logic (synthetic scanner for now; swap in hardware capture later)
+- [x] EMA + N‑of‑M logic (with immediate 'new' on current SNR ≥ threshold)
 - [x] Status endpoint hooks (via API) and graceful start/stop
 
 ---
@@ -232,12 +232,22 @@ Checklist:
 
 ---
 
+## Parameter defaults (updated)
+
+- 5.8 GHz channel_bw_hz: 6e6
+- dc_guard_hz: 100e3–150e3
+- dwell_ms: 30–40 for stable SNR; 15 for fast sweep
+- ranking: SNR_mean (raw) and/or ema_snr for smoothing
+
+
+---
+
 ## Immediate next steps (short list)
 
-1. Implement real scanner backend (HackRF capture) using `band_metrics` and upserting into SQLite; emit SSE updates from API; add EMA and N‑of‑M debounce.
-2. Build GNU Radio flowgraph for analog demod; wrap with a small CLI; integrate start/stop from API.
-3. Wire `/video.mjpeg` to live ZMQ frames from demod on Pi (fallback to synthetic already implemented).
-4. Create `systemd` unit files and a simple install script for Pi; test boot and kiosk mode.
+1. Build GNU Radio flowgraph for analog demod; wrap with a small CLI; integrate start/stop from API (replace mock demod).
+2. Expose `snr_peak_db` in API candidates (optional) and consider ordering by `snr_db` (mean) with ema_snr as a secondary field.
+3. Tune gains/dwell/BW on Pi and validate detection at 5658 with SNR_mean ≥ 10; lock defaults.
+4. Performance pass on MJPEG bridge (JPEG quality/frame rate) and UI.
 
 ---
 

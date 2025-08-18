@@ -151,12 +151,18 @@ class Scanner:
                     # EMA for power and SNR
                     self.ema_power_dbm[f] = (1.0 - self.ema_alpha) * self.ema_power_dbm[f] + self.ema_alpha * band_power_db
                     self.ema_snr_db[f] = (1.0 - self.ema_alpha) * self.ema_snr_db[f] + self.ema_alpha * snr
-                    # Debounce window
-                    is_candidate = self.ema_snr_db[f] >= self.min_snr_db
+                    # Debounce window (use CURRENT SNR for immediacy)
+                    current_candidate = snr >= self.min_snr_db
                     win = self.activity_windows[f]
-                    win.append(is_candidate)
+                    win.append(current_candidate)
                     hits = sum(1 for v in win if v)
-                    status = "active" if (hits >= self.alert_hits and len(win) >= min(self.alert_window, self.alert_hits)) else ("new" if is_candidate else "lost")
+                    became_persistent = (hits >= self.alert_hits and len(win) >= min(self.alert_window, self.alert_hits))
+                    if current_candidate and became_persistent:
+                        status = "active"
+                    elif current_candidate:
+                        status = "new"
+                    else:
+                        status = "lost"
                     # Upsert DB
                     upsert_candidate(
                         freq_hz=f,
