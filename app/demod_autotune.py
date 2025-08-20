@@ -381,7 +381,12 @@ def auto_gain(stream: HackRFStream, target_rms: float = 0.25, max_clip: float = 
 def run(freq_hz: int, endpoint: str, topic: str, sample_rate_hz: float, width: int, height: int, fps: int, prefer_ntsc: bool) -> None:
     ctx = zmq.Context.instance()
     pub = ctx.socket(zmq.PUB)
-    pub.bind(endpoint)
+    try:
+        pub.bind(endpoint)
+        print(f"[autotune] ZMQ publisher bound at {endpoint} topic={topic}", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"[autotune] ERROR: failed to bind ZMQ at {endpoint}: {e}", file=sys.stderr, flush=True)
+        raise
     topic_b = topic.encode()
 
     stop = False
@@ -394,14 +399,17 @@ def run(freq_hz: int, endpoint: str, topic: str, sample_rate_hz: float, width: i
     signal.signal(signal.SIGTERM, _sig)
 
     use_hw = os.environ.get("RER_USE_HW", "0") == "1"
+    print(f"[autotune] RER_USE_HW={use_hw}", file=sys.stderr, flush=True)
     stream = HackRFStream(sample_rate_hz) if use_hw else None
 
     try:
         if stream is not None and stream.is_ready():
             # Hardware path with auto gain / tuning
+            print("[autotune] Using HackRF hardware", file=sys.stderr, flush=True)
             auto_gain(stream)
             tuned_f, line_len, q = initial_lock(stream, int(freq_hz), sample_rate_hz, prefer_ntsc, width, height)
             stream.set_center_frequency(tuned_f)
+            print(f"[autotune] Initial lock at {tuned_f/1e6:.3f} MHz, q={q:.3f}, line_len={line_len}", file=sys.stderr, flush=True)
             # Main loop
             last_quality = q
             last_relock = time.time()
@@ -449,6 +457,10 @@ def run(freq_hz: int, endpoint: str, topic: str, sample_rate_hz: float, width: i
                 pub.send_multipart([topic_b, json.dumps(meta).encode("utf-8"), frame.tobytes()])
         else:
             # Fallback synthetic path: emulate frames without hardware
+            if not use_hw:
+                print("[autotune] Hardware mode disabled (RER_USE_HW!=1). Using synthetic frames.", file=sys.stderr, flush=True)
+            else:
+                print("[autotune] SoapySDR/HackRF unavailable; using synthetic frames.", file=sys.stderr, flush=True)
             t0 = time.time()
             frame_idx = 0
             period = 1.0 / max(1, fps)
