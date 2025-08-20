@@ -23,6 +23,7 @@ except Exception:  # pragma: no cover
 
 ZMQ_ENDPOINT = os.environ.get("RER_FRAMES_ZMQ", "tcp://127.0.0.1:5556")
 ZMQ_TOPIC = os.environ.get("RER_FRAMES_TOPIC", "frames").encode()
+DEBUG = os.environ.get("RER_VIDEO_DEBUG", "0") == "1"
 
 
 async def _create_zmq_stream(timeout_first_frame_s: float = 1.0):
@@ -38,6 +39,11 @@ async def _create_zmq_stream(timeout_first_frame_s: float = 1.0):
     sub = ctx.socket(zmq.SUB)
     sub.setsockopt(zmq.SUBSCRIBE, ZMQ_TOPIC)
     sub.connect(ZMQ_ENDPOINT)
+    if DEBUG:
+        try:
+            print(f"[video_bridge] SUB connect to {ZMQ_ENDPOINT} topic={ZMQ_TOPIC.decode('utf-8', 'ignore')}")
+        except Exception:
+            pass
 
     # Try to receive the first frame within the timeout
     first_payload = None
@@ -60,6 +66,11 @@ async def _create_zmq_stream(timeout_first_frame_s: float = 1.0):
                         fmt = str(meta.get("format", "gray8"))
                         first_payload = payload
                         first_meta = (width, height, fmt)
+                        if DEBUG:
+                            try:
+                                print(f"[video_bridge] First frame meta width={width} height={height} fmt={fmt}")
+                            except Exception:
+                                pass
                         break
                     except Exception:
                         continue
@@ -69,6 +80,11 @@ async def _create_zmq_stream(timeout_first_frame_s: float = 1.0):
                     sub.close(0)
                 except Exception:
                     pass
+                if DEBUG:
+                    try:
+                        print(f"[video_bridge] No frame within {timeout_first_frame_s:.1f}s; falling back")
+                    except Exception:
+                        pass
                 return None
 
         width, height, fmt = first_meta  # type: ignore
@@ -163,7 +179,8 @@ async def mjpeg_stream(boundary: str = "frame") -> AsyncGenerator[bytes, None]:
       real frames as soon as they start without forcing the client to reconnect.
     """
     while True:
-        stream = await _create_zmq_stream(timeout_first_frame_s=2.0)
+        # Allow longer initial lock time from demod
+        stream = await _create_zmq_stream(timeout_first_frame_s=10.0)
         if stream is None:
             # Yield a single synthetic frame, then retry ZMQ
             async for chunk in synthetic_mjpeg_stream(boundary):
