@@ -34,6 +34,9 @@ class HackRFStream:
         self.stream = None
         self.rx_chan = 0
         self.format = "CS16"
+        self.lna_gain = 28
+        self.vga_gain = 16
+        self.amp_enabled = True
         if self.SoapySDR is None:
             return
         try:
@@ -50,11 +53,11 @@ class HackRFStream:
             except Exception:
                 pass
             try:
-                self.device.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "LNA", 28)
+                self.device.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "LNA", self.lna_gain)
             except Exception:
                 pass
             try:
-                self.device.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "VGA", 16)
+                self.device.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "VGA", self.vga_gain)
             except Exception:
                 pass
             try:
@@ -84,16 +87,19 @@ class HackRFStream:
             if amp is not None:
                 try:
                     self.device.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "AMP", 1 if amp else 0)  # type: ignore[arg-type]
+                    self.amp_enabled = bool(amp)
                 except Exception:
                     pass
             if lna is not None:
                 try:
-                    self.device.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "LNA", int(max(0, min(40, lna))))
+                    self.lna_gain = int(max(0, min(40, lna)))
+                    self.device.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "LNA", self.lna_gain)
                 except Exception:
                     pass
             if vga is not None:
                 try:
-                    self.device.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "VGA", int(max(0, min(62, vga))))
+                    self.vga_gain = int(max(0, min(62, vga)))
+                    self.device.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "VGA", self.vga_gain)
                 except Exception:
                     pass
         except Exception:
@@ -127,6 +133,48 @@ class HackRFStream:
             return out
         except Exception:
             return np.zeros(num_samples, dtype=np.complex64)
+
+    def read_samples_with_stats(self, num_samples: int) -> Tuple[np.ndarray, float, float]:
+        """Return IQ along with (rms, clip_fraction)."""
+        if not self.is_ready():
+            iq = np.zeros(num_samples, dtype=np.complex64)
+            return iq, 0.0, 0.0
+        out = np.empty(num_samples, dtype=np.complex64)
+        total = 0
+        tmp_i16 = np.empty(num_samples * 2, dtype=np.int16)
+        tmp_i8 = np.empty(num_samples * 2, dtype=np.int8)
+        clips = 0
+        raw = 0
+        try:
+            while total < num_samples:
+                need = min(4096, num_samples - total)
+                if self.format == "CS16":
+                    sr = self.device.readStream(self.stream, [tmp_i16[: need * 2]], need)
+                    if sr.ret > 0:
+                        sl = tmp_i16[: sr.ret * 2]
+                        # Count raw values near rails as clip
+                        clips += int(np.count_nonzero((sl >= 32760) | (sl <= -32760)))
+                        raw += int(sl.size)
+                        vec = sl.astype(np.float32) / 32768.0
+                        out[total : total + sr.ret] = vec[0::2] + 1j * vec[1::2]
+                        total += sr.ret
+                        continue
+                    else:
+                        self.format = "CS8"
+                sr = self.device.readStream(self.stream, [tmp_i8[: need * 2]], need)
+                if sr.ret > 0:
+                    sl8 = tmp_i8[: sr.ret * 2]
+                    clips += int(np.count_nonzero((sl8 >= 127) | (sl8 <= -127)))
+                    raw += int(sl8.size)
+                    vec8 = sl8.astype(np.float32) / 128.0
+                    out[total : total + sr.ret] = vec8[0::2] + 1j * vec8[1::2]
+                    total += sr.ret
+            rms = float(np.sqrt(np.mean(np.abs(out[:total]) ** 2) + 1e-12))
+            clip_frac = float(clips) / float(max(1, raw))
+            return out[:total], rms, clip_frac
+        except Exception:
+            iq = np.zeros(total or num_samples, dtype=np.complex64)
+            return iq, 0.0, 0.0
 
     def measure_rms(self, num_samples: int = 32768) -> float:
         iq = self.read_samples(num_samples)
@@ -297,37 +345,35 @@ def initial_lock(stream: HackRFStream, base_freq_hz: int, sample_rate_hz: float,
     return int(best_f), int(best_line), float(best_q)
 
 
-def auto_gain(stream: HackRFStream, target_rms: float = 0.25) -> None:
-    """Crude AGC for HackRF front-end using LNA/VGA to steer RMS near target."""
+def auto_gain(stream: HackRFStream, target_rms: float = 0.25, max_clip: float = 0.01) -> None:
+    """Crude AGC for HackRF front-end using LNA/VGA to steer RMS near target with clip avoidance."""
     if not stream.is_ready():
         return
-    # Probe current RMS
-    rms = stream.measure_rms(16384)
+    # Probe current RMS/clip
+    _iq, rms, clip = stream.read_samples_with_stats(16384)
     # Iterate a few adjustments
     try:
-        for _ in range(6):
+        for _ in range(8):
             err = target_rms - rms
-            if abs(err) < 0.03:
+            # Avoid clipping aggressively
+            if clip > max_clip:
+                # Reduce VGA first
+                new_vga = max(0, stream.vga_gain - 6)
+                stream.set_gains(vga=new_vga)
+            elif abs(err) < 0.03:
                 break
             # Read current gains is not available; nudge VGA primarily, LNA secondarily
             # Heuristic: 6 dB per 6 steps approximately for VGA/LNA
             step = 6 if err > 0 else -6
             # Try VGA first
-            for gname in ("VGA", "LNA"):
-                try:
-                    # We can't read back gain reliably; try a small sweep around reasonable defaults
-                    # Use environment overrides if provided
-                    base_vga = int(os.environ.get("RER_VGA", "20"))
-                    base_lna = int(os.environ.get("RER_LNA", "28"))
-                    if gname == "VGA":
-                        base_vga = min(62, max(0, base_vga + step))
-                        stream.set_gains(vga=base_vga)
-                    else:
-                        base_lna = min(40, max(0, base_lna + step))
-                        stream.set_gains(lna=base_lna)
-                except Exception:
-                    pass
-            rms = stream.measure_rms(16384)
+            new_vga = min(62, max(0, stream.vga_gain + step))
+            stream.set_gains(vga=new_vga)
+            # If still far, adjust LNA moderately
+            _iq, rms, clip = stream.read_samples_with_stats(16384)
+            if (err > 0 and rms < target_rms * 0.8) or (err < 0 and rms > target_rms * 1.2):
+                new_lna = min(40, max(0, stream.lna_gain + step))
+                stream.set_gains(lna=new_lna)
+            _iq, rms, clip = stream.read_samples_with_stats(16384)
     except Exception:
         pass
 
@@ -362,6 +408,11 @@ def run(freq_hz: int, endpoint: str, topic: str, sample_rate_hz: float, width: i
             # Buffer ~ 2 frames worth
             samples_per_iter = max(line_len * height * 2, int(sample_rate_hz / max(5, fps)))
             while not stop:
+                # Periodically adjust gains in-run
+                if int(time.time() * 2) % 10 == 0:  # ~5 Hz check window; cheap heuristic
+                    _iq_agc, rms_agc, clip_agc = stream.read_samples_with_stats(8192)
+                    if (rms_agc < 0.18) or (rms_agc > 0.35) or (clip_agc > 0.01):
+                        auto_gain(stream)
                 iq = stream.read_samples(samples_per_iter)
                 env = fm_discriminator(iq)
                 env = dc_block(env, alpha=0.001)
