@@ -347,22 +347,34 @@ async def _start_demod(freq_hz: int) -> None:
         env = os.environ.copy()
         endpoint = env.get("RER_FRAMES_ZMQ", "tcp://127.0.0.1:5556")
         topic = env.get("RER_FRAMES_TOPIC", "frames")
-        # Prefer line-timed demod; fall back to simple envelope, then mock
+        # Prefer auto-tuning demod; fall back to line-timed, then simple envelope, then mock
         try:
-            state.demod_proc = subprocess.Popen([
-                sys.executable, "-m", "app.demod_lines", "--freq", str(freq_hz), "--sample-rate", "8000000",
+            auto_args = [
+                sys.executable, "-m", "app.demod_autotune", "--freq", str(freq_hz), "--sample-rate", "8000000",
                 "--endpoint", endpoint, "--topic", topic, "--fps", "10", "--width", "320", "--height", "240"
-            ])
+            ]
+            if os.environ.get("RER_FOCUS_NTSC", "0") == "1":
+                auto_args.append("--ntsc")
+            state.demod_proc = subprocess.Popen(auto_args)
         except Exception:
             try:
-                state.demod_proc = subprocess.Popen([
-                    sys.executable, "-m", "app.demod_analog", "--freq", str(freq_hz), "--sample-rate", "8000000",
+                line_args = [
+                    sys.executable, "-m", "app.demod_lines", "--freq", str(freq_hz), "--sample-rate", "8000000",
                     "--endpoint", endpoint, "--topic", topic, "--fps", "10", "--width", "320", "--height", "240"
-                ])
+                ]
+                if os.environ.get("RER_FOCUS_NTSC", "0") == "1":
+                    line_args.append("--ntsc")
+                state.demod_proc = subprocess.Popen(line_args)
             except Exception:
-                state.demod_proc = subprocess.Popen([
-                    sys.executable, "-m", "app.demod_mock", "--freq", str(freq_hz), "--endpoint", endpoint, "--topic", topic, "--fps", "10"
-                ])
+                try:
+                    state.demod_proc = subprocess.Popen([
+                        sys.executable, "-m", "app.demod_analog", "--freq", str(freq_hz), "--sample-rate", "8000000",
+                        "--endpoint", endpoint, "--topic", topic, "--fps", "10", "--width", "320", "--height", "240"
+                    ])
+                except Exception:
+                    state.demod_proc = subprocess.Popen([
+                        sys.executable, "-m", "app.demod_mock", "--freq", str(freq_hz), "--endpoint", endpoint, "--topic", topic, "--fps", "10"
+                    ])
     except Exception:
         state.demod_proc = None
 

@@ -21,6 +21,19 @@ def fm_discriminator(iq: np.ndarray) -> np.ndarray:
     return np.angle(d).astype(np.float32)
 
 
+def one_pole_dc_block(x: np.ndarray, alpha: float = 0.001) -> np.ndarray:
+    """Remove DC/very low-frequency drift by subtracting one-pole low-pass."""
+    if x.size == 0:
+        return x.astype(np.float32)
+    y = np.empty_like(x, dtype=np.float32)
+    lp = float(x[0])
+    a = float(alpha)
+    for i in range(x.size):
+        lp = (1.0 - a) * lp + a * float(x[i])
+        y[i] = float(x[i]) - lp
+    return y
+
+
 def lowpass_ma(x: np.ndarray, taps: int) -> np.ndarray:
     if taps <= 1:
         return x
@@ -101,7 +114,9 @@ def run(freq_hz: int, endpoint: str, topic: str, sample_rate_hz: float, width: i
             iq = sampler.capture(freq_hz, sample_rate_hz, samples_per_iter)
             # Recover baseband video using FM discriminator
             env = fm_discriminator(iq)
-            env = lowpass_ma(env, taps=256)
+            # Remove slow drift, then light smoothing to preserve line timing
+            env = one_pole_dc_block(env, alpha=0.001)
+            env = lowpass_ma(env, taps=32)
             # Append to rolling buffer
             if env.size >= buf.size:
                 buf = env[-buf.size :]
