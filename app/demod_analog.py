@@ -108,7 +108,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--endpoint", default=os.environ.get("RER_FRAMES_ZMQ", "tcp://127.0.0.1:5556"))
     ap.add_argument("--topic", default=os.environ.get("RER_FRAMES_TOPIC", "frames"))
     ap.add_argument("--width", type=int, default=320)
-    ap.add_argument("--height", type=int, default=240)
+    ap.add_argument("--height", type=int, default=180)
     ap.add_argument("--fps", type=int, default=10)
     args = ap.parse_args(argv)
     run(args.freq_hz, args.endpoint, args.topic, args.sample_rate, args.width, args.height, args.fps)

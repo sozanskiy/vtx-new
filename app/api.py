@@ -349,9 +349,12 @@ async def _start_demod(freq_hz: int) -> None:
         topic = env.get("RER_FRAMES_TOPIC", "frames")
         # Prefer auto-tuning demod; fall back to line-timed, then simple envelope, then mock
         try:
+            sr = os.environ.get("RER_FOCUS_SAMPLE_RATE", "12000000")
+            w = os.environ.get("RER_FOCUS_WIDTH", "320")
+            h = os.environ.get("RER_FOCUS_HEIGHT", "180")
             auto_args = [
-                sys.executable, "-m", "app.demod_autotune", "--freq", str(freq_hz), "--sample-rate", "8000000",
-                "--endpoint", endpoint, "--topic", topic, "--fps", "10", "--width", "320", "--height", "240"
+                sys.executable, "-m", "app.demod_autotune", "--freq", str(freq_hz), "--sample-rate", sr,
+                "--endpoint", endpoint, "--topic", topic, "--fps", "10", "--width", w, "--height", h
             ]
             if os.environ.get("RER_FOCUS_NTSC", "0") == "1":
                 auto_args.append("--ntsc")
@@ -359,8 +362,8 @@ async def _start_demod(freq_hz: int) -> None:
         except Exception:
             try:
                 line_args = [
-                    sys.executable, "-m", "app.demod_lines", "--freq", str(freq_hz), "--sample-rate", "8000000",
-                    "--endpoint", endpoint, "--topic", topic, "--fps", "10", "--width", "320", "--height", "240"
+                    sys.executable, "-m", "app.demod_lines", "--freq", str(freq_hz), "--sample-rate", sr,
+                    "--endpoint", endpoint, "--topic", topic, "--fps", "10", "--width", w, "--height", h
                 ]
                 if os.environ.get("RER_FOCUS_NTSC", "0") == "1":
                     line_args.append("--ntsc")
@@ -368,8 +371,8 @@ async def _start_demod(freq_hz: int) -> None:
             except Exception:
                 try:
                     state.demod_proc = subprocess.Popen([
-                        sys.executable, "-m", "app.demod_analog", "--freq", str(freq_hz), "--sample-rate", "8000000",
-                        "--endpoint", endpoint, "--topic", topic, "--fps", "10", "--width", "320", "--height", "240"
+                        sys.executable, "-m", "app.demod_analog", "--freq", str(freq_hz), "--sample-rate", sr,
+                        "--endpoint", endpoint, "--topic", topic, "--fps", "10", "--width", w, "--height", h
                     ])
                 except Exception:
                     state.demod_proc = subprocess.Popen([

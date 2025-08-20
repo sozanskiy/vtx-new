@@ -145,7 +145,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--endpoint", default=os.environ.get("RER_FRAMES_ZMQ", "tcp://127.0.0.1:5556"))
     ap.add_argument("--topic", default=os.environ.get("RER_FRAMES_TOPIC", "frames"))
     ap.add_argument("--width", type=int, default=320)
-    ap.add_argument("--height", type=int, default=240)
+    ap.add_argument("--height", type=int, default=180)
     ap.add_argument("--fps", type=int, default=10)
     ap.add_argument("--ntsc", action="store_true", help="Prefer NTSC line rate (~15.734 kHz); default PAL (~15.625 kHz)")
     args = ap.parse_args(argv)

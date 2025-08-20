@@ -12,6 +12,49 @@ import numpy as np
 import zmq
 
 
+# --- Signal-processing helpers (offset mix, FIR LPF, de-emphasis, sync metric) ---
+
+def freq_shift(iq: np.ndarray, fs: float, shift_hz: float) -> np.ndarray:
+    n = np.arange(iq.size, dtype=np.float32)
+    ph = np.exp(-1j * 2.0 * np.pi * (shift_hz / fs) * n)
+    return (iq * ph).astype(np.complex64)
+
+
+def fir_lowpass(x: np.ndarray, fs: float, cutoff_hz: float, numtaps: int = 129) -> np.ndarray:
+    fc = float(cutoff_hz) / float(fs / 2.0)
+    m = np.arange(numtaps, dtype=np.float32) - (float(numtaps) - 1.0) / 2.0
+    # windowed-sinc LPF (Hann window)
+    h = np.sinc(fc * m) * np.hanning(numtaps).astype(np.float32)
+    h = (h / (np.sum(h) + 1e-12)).astype(np.float32)
+    return np.convolve(x, h.astype(x.dtype, copy=False), mode="same")
+
+
+def deemphasis_iir(x: np.ndarray, fs: float, tau_us: float = 75.0) -> np.ndarray:
+    alpha = float(np.exp(-1.0 / (fs * (tau_us * 1e-6))))
+    y = np.empty_like(x, dtype=np.float32)
+    s = 0.0
+    for i in range(x.size):
+        s = alpha * s + (1.0 - alpha) * float(x[i])
+        y[i] = s
+    return y
+
+
+def goertzel_power(x: np.ndarray, fs: float, f0: float) -> float:
+    n = int(x.size)
+    if n <= 4:
+        return 0.0
+    k = int(0.5 + (n * f0) / fs)
+    w = 2.0 * np.pi * k / n
+    c = np.cos(w)
+    coeff = 2.0 * c
+    d1 = 0.0
+    d2 = 0.0
+    for v in x.astype(np.float32):
+        d0 = float(v) + coeff * d1 - d2
+        d2, d1 = d1, d0
+    p = d1 * d1 + d2 * d2 - coeff * d1 * d2
+    return float(p / (n + 1e-9))
+
 def _try_import_soapy() -> Optional[object]:
     try:
         import SoapySDR  # type: ignore
@@ -34,9 +77,9 @@ class HackRFStream:
         self.stream = None
         self.rx_chan = 0
         self.format = "CS16"
-        self.lna_gain = 28
-        self.vga_gain = 16
-        self.amp_enabled = True
+        self.lna_gain = 16
+        self.vga_gain = 8
+        self.amp_enabled = False
         if self.SoapySDR is None:
             return
         try:
@@ -49,7 +92,7 @@ class HackRFStream:
             self.device.setBandwidth(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, self.sample_rate_hz)
             # Safe default gains
             try:
-                self.device.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "AMP", 1)  # type: ignore[arg-type]
+                self.device.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "AMP", 0)  # type: ignore[arg-type]
             except Exception:
                 pass
             try:
@@ -60,11 +103,20 @@ class HackRFStream:
                 self.device.setGain(self.SoapySDR.SOAPY_SDR_RX, self.rx_chan, "VGA", self.vga_gain)
             except Exception:
                 pass
-            try:
-                self.stream = self.device.setupStream(self.SoapySDR.SOAPY_SDR_RX, self.format, [self.rx_chan])
-            except Exception:
-                self.format = "CS8"
-                self.stream = self.device.setupStream(self.SoapySDR.SOAPY_SDR_RX, self.format, [self.rx_chan])
+            # Select sample format (default CS16 for stability; override with RER_FOCUS_SAMPLE_FORMAT)
+            requested_fmt = os.environ.get("RER_FOCUS_SAMPLE_FORMAT", "CS16").upper()
+            fmts = [requested_fmt, "CS16", "CS8"]
+            last_exc = None
+            for fmt in fmts:
+                try:
+                    self.format = fmt
+                    self.stream = self.device.setupStream(self.SoapySDR.SOAPY_SDR_RX, fmt, [self.rx_chan])
+                    break
+                except Exception as e:
+                    last_exc = e
+                    self.stream = None
+            if self.stream is None and last_exc is not None:
+                raise last_exc
             self.device.activateStream(self.stream)
         except Exception:
             self.close()
@@ -115,21 +167,19 @@ class HackRFStream:
         try:
             while total < num_samples:
                 need = min(4096, num_samples - total)
-                if self.format == "CS16":
+                if self.format == "CS8":
+                    sr = self.device.readStream(self.stream, [tmp_i8[: need * 2]], need)
+                else:
                     sr = self.device.readStream(self.stream, [tmp_i16[: need * 2]], need)
-                    if sr.ret > 0:
+                if sr.ret > 0:
+                    if self.format == "CS8":
+                        vec8 = tmp_i8[: sr.ret * 2].astype(np.float32) / 128.0
+                        out[total : total + sr.ret] = vec8[0::2] + 1j * vec8[1::2]
+                        total += sr.ret
+                    else:
                         vec = tmp_i16[: sr.ret * 2].astype(np.float32) / 32768.0
                         out[total : total + sr.ret] = vec[0::2] + 1j * vec[1::2]
                         total += sr.ret
-                        continue
-                    else:
-                        # Try fallback
-                        self.format = "CS8"
-                sr = self.device.readStream(self.stream, [tmp_i8[: need * 2]], need)
-                if sr.ret > 0:
-                    vec8 = tmp_i8[: sr.ret * 2].astype(np.float32) / 128.0
-                    out[total : total + sr.ret] = vec8[0::2] + 1j * vec8[1::2]
-                    total += sr.ret
             return out
         except Exception:
             return np.zeros(num_samples, dtype=np.complex64)
@@ -148,27 +198,24 @@ class HackRFStream:
         try:
             while total < num_samples:
                 need = min(4096, num_samples - total)
-                if self.format == "CS16":
+                if self.format == "CS8":
+                    sr = self.device.readStream(self.stream, [tmp_i8[: need * 2]], need)
+                    if sr.ret > 0:
+                        sl8 = tmp_i8[: sr.ret * 2]
+                        clips += int(np.count_nonzero((sl8 >= 127) | (sl8 <= -127)))
+                        raw += int(sl8.size)
+                        vec8 = sl8.astype(np.float32) / 128.0
+                        out[total : total + sr.ret] = vec8[0::2] + 1j * vec8[1::2]
+                        total += sr.ret
+                else:
                     sr = self.device.readStream(self.stream, [tmp_i16[: need * 2]], need)
                     if sr.ret > 0:
                         sl = tmp_i16[: sr.ret * 2]
-                        # Count raw values near rails as clip
                         clips += int(np.count_nonzero((sl >= 32760) | (sl <= -32760)))
                         raw += int(sl.size)
                         vec = sl.astype(np.float32) / 32768.0
                         out[total : total + sr.ret] = vec[0::2] + 1j * vec[1::2]
                         total += sr.ret
-                        continue
-                    else:
-                        self.format = "CS8"
-                sr = self.device.readStream(self.stream, [tmp_i8[: need * 2]], need)
-                if sr.ret > 0:
-                    sl8 = tmp_i8[: sr.ret * 2]
-                    clips += int(np.count_nonzero((sl8 >= 127) | (sl8 <= -127)))
-                    raw += int(sl8.size)
-                    vec8 = sl8.astype(np.float32) / 128.0
-                    out[total : total + sr.ret] = vec8[0::2] + 1j * vec8[1::2]
-                    total += sr.ret
             rms = float(np.sqrt(np.mean(np.abs(out[:total]) ** 2) + 1e-12))
             clip_frac = float(clips) / float(max(1, raw))
             return out[:total], rms, clip_frac
@@ -298,11 +345,15 @@ def frame_from_raster(env: np.ndarray, line_len: int, width: int, height: int) -
 
 
 def quality_metric(iq: np.ndarray, sample_rate_hz: float, prefer_ntsc: Optional[bool], width: int, height: int) -> Tuple[float, int, np.ndarray]:
-    env = fm_discriminator(iq)
+    # Precondition IQ: LPF the channel before discriminator for a video-like baseband
+    env_c = fir_lowpass(iq, sample_rate_hz, cutoff_hz=5_000_000, numtaps=129)
+    env = fm_discriminator(env_c)
+    env = deemphasis_iir(env, sample_rate_hz, tau_us=(75.0 if (prefer_ntsc or prefer_ntsc is None) else 50.0))
     env = dc_block(env, alpha=0.001)
-    env = moving_average(env, 32)
-    line_len, _conf = estimate_line_len(env, sample_rate_hz, prefer_ntsc)
-    img_u8, q = frame_from_raster(env, line_len, width, height)
+    # Build Y (grayscale) with a gentle 3 MHz LPF
+    y = fir_lowpass(env.astype(np.complex64), sample_rate_hz, cutoff_hz=3_000_000, numtaps=129).real.astype(np.float32)
+    line_len, _conf = estimate_line_len(y, sample_rate_hz, prefer_ntsc)
+    img_u8, q = frame_from_raster(y, line_len, width, height)
     return q, line_len, img_u8
 
 
@@ -312,10 +363,23 @@ def initial_lock(stream: HackRFStream, base_freq_hz: int, sample_rate_hz: float,
     best_q = -1e9
     best_f = base_freq_hz
     best_line = int(sample_rate_hz / 15680.0)
+    offset_mix_hz = 1_000_000  # avoid LO/DC spur at baseband
     for off in offsets:
-        stream.set_center_frequency(base_freq_hz + off)
+        stream.set_center_frequency(base_freq_hz + off + offset_mix_hz)
         iq = stream.read_samples(max(65536, int(sample_rate_hz * 0.03)))
-        q, line_len, _img = quality_metric(iq, sample_rate_hz, prefer_ntsc, width, height)
+        iq = freq_shift(iq, sample_rate_hz, shift_hz=+offset_mix_hz)
+        # Sync-tone based metric (after proper conditioning)
+        cond = fir_lowpass(iq, sample_rate_hz, cutoff_hz=5_000_000, numtaps=129)
+        env = fm_discriminator(cond)
+        env = deemphasis_iir(env, sample_rate_hz, tau_us=75.0)
+        env = dc_block(env, alpha=0.001)
+        # Light LPF on baseband before tone check
+        y = fir_lowpass(env.astype(np.complex64), sample_rate_hz, cutoff_hz=3_000_000, numtaps=129).real.astype(np.float32)
+        m_ntsc = goertzel_power(y, sample_rate_hz, 15_734.0)
+        m_pal = goertzel_power(y, sample_rate_hz, 15_625.0)
+        q = max(m_ntsc, m_pal)
+        # Also compute a provisional line_len for later reuse
+        line_len, _ = estimate_line_len(y, sample_rate_hz, prefer_ntsc)
         if q > best_q:
             best_q = q
             best_f = base_freq_hz + off
@@ -324,9 +388,18 @@ def initial_lock(stream: HackRFStream, base_freq_hz: int, sample_rate_hz: float,
     if best_q < 0.05:
         offsets = list(range(-5_000_000, 5_000_001, 500_000))
         for off in offsets:
-            stream.set_center_frequency(base_freq_hz + off)
+            stream.set_center_frequency(base_freq_hz + off + offset_mix_hz)
             iq = stream.read_samples(max(65536, int(sample_rate_hz * 0.03)))
-            q, line_len, _img = quality_metric(iq, sample_rate_hz, prefer_ntsc, width, height)
+            iq = freq_shift(iq, sample_rate_hz, shift_hz=+offset_mix_hz)
+            cond = fir_lowpass(iq, sample_rate_hz, cutoff_hz=5_000_000, numtaps=129)
+            env = fm_discriminator(cond)
+            env = deemphasis_iir(env, sample_rate_hz, tau_us=75.0)
+            env = dc_block(env, alpha=0.001)
+            y = fir_lowpass(env.astype(np.complex64), sample_rate_hz, cutoff_hz=3_000_000, numtaps=129).real.astype(np.float32)
+            m_ntsc = goertzel_power(y, sample_rate_hz, 15_734.0)
+            m_pal = goertzel_power(y, sample_rate_hz, 15_625.0)
+            q = max(m_ntsc, m_pal)
+            line_len, _ = estimate_line_len(y, sample_rate_hz, prefer_ntsc)
             if q > best_q:
                 best_q = q
                 best_f = base_freq_hz + off
@@ -335,9 +408,18 @@ def initial_lock(stream: HackRFStream, base_freq_hz: int, sample_rate_hz: float,
     fine_offsets = list(range(-100_000, 100_001, 10_000))
     center = best_f
     for off in fine_offsets:
-        stream.set_center_frequency(center + off)
+        stream.set_center_frequency(center + off + offset_mix_hz)
         iq = stream.read_samples(max(65536, int(sample_rate_hz * 0.03)))
-        q, line_len, _img = quality_metric(iq, sample_rate_hz, prefer_ntsc, width, height)
+        iq = freq_shift(iq, sample_rate_hz, shift_hz=+offset_mix_hz)
+        cond = fir_lowpass(iq, sample_rate_hz, cutoff_hz=5_000_000, numtaps=129)
+        env = fm_discriminator(cond)
+        env = deemphasis_iir(env, sample_rate_hz, tau_us=75.0)
+        env = dc_block(env, alpha=0.001)
+        y = fir_lowpass(env.astype(np.complex64), sample_rate_hz, cutoff_hz=3_000_000, numtaps=129).real.astype(np.float32)
+        m_ntsc = goertzel_power(y, sample_rate_hz, 15_734.0)
+        m_pal = goertzel_power(y, sample_rate_hz, 15_625.0)
+        q = max(m_ntsc, m_pal)
+        line_len, _ = estimate_line_len(y, sample_rate_hz, prefer_ntsc)
         if q > best_q:
             best_q = q
             best_f = center + off
@@ -413,22 +495,29 @@ def run(freq_hz: int, endpoint: str, topic: str, sample_rate_hz: float, width: i
             # Main loop
             last_quality = q
             last_relock = time.time()
-            # Buffer ~ 2 frames worth
-            samples_per_iter = max(line_len * height * 2, int(sample_rate_hz / max(5, fps)))
+            # Buffer ~ 1.25 frames worth to reduce latency on Pi
+            samples_per_iter = max(int(line_len * height * 1.25), int(sample_rate_hz / max(5, fps)))
             while not stop:
                 # Periodically adjust gains in-run
                 if int(time.time() * 2) % 10 == 0:  # ~5 Hz check window; cheap heuristic
                     _iq_agc, rms_agc, clip_agc = stream.read_samples_with_stats(8192)
                     if (rms_agc < 0.18) or (rms_agc > 0.35) or (clip_agc > 0.01):
                         auto_gain(stream)
+                # Offset-tune in hardware by +1 MHz and mix back digitally to dodge DC spur
+                stream.set_center_frequency(tuned_f + 1_000_000)
                 iq = stream.read_samples(samples_per_iter)
-                env = fm_discriminator(iq)
+                iq = freq_shift(iq, sample_rate_hz, shift_hz=+1_000_000)
+                # Pre-demod channel LPF to tame discriminator noise
+                iq_c = fir_lowpass(iq, sample_rate_hz, cutoff_hz=5_000_000, numtaps=129)
+                env = fm_discriminator(iq_c)
+                env = deemphasis_iir(env, sample_rate_hz, tau_us=(75.0 if (prefer_ntsc or prefer_ntsc is None) else 50.0))
                 env = dc_block(env, alpha=0.001)
-                env = moving_average(env, 32)
+                # Build luminance with ~3 MHz LPF
+                y = fir_lowpass(env.astype(np.complex64), sample_rate_hz, cutoff_hz=3_000_000, numtaps=129).real.astype(np.float32)
                 # Periodically re-estimate line length
                 if (time.time() - last_relock) > 1.0:
-                    line_len, _ = estimate_line_len(env, sample_rate_hz, prefer_ntsc)
-                frame, q = frame_from_raster(env, line_len, width, height)
+                    line_len, _ = estimate_line_len(y, sample_rate_hz, prefer_ntsc)
+                frame, q = frame_from_raster(y, line_len, width, height)
                 # Adaptive re-lock if quality collapses
                 if q < (last_quality - 0.15) or q < 0.05:
                     tuned_f, line_len, q2 = initial_lock(stream, tuned_f, sample_rate_hz, prefer_ntsc, width, height)
@@ -445,7 +534,16 @@ def run(freq_hz: int, endpoint: str, topic: str, sample_rate_hz: float, width: i
                             continue
                         stream.set_center_frequency(tuned_f + df)
                         iq_s = stream.read_samples(max(32768, int(sample_rate_hz * 0.01)))
-                        q_s, _, _ = quality_metric(iq_s, sample_rate_hz, prefer_ntsc, width, height)
+                        iq_s = freq_shift(iq_s, sample_rate_hz, shift_hz=+1_000_000)
+                        iq_sc = fir_lowpass(iq_s, sample_rate_hz, cutoff_hz=5_000_000, numtaps=129)
+                        env_s = fm_discriminator(iq_sc)
+                        env_s = deemphasis_iir(env_s, sample_rate_hz, tau_us=(75.0 if (prefer_ntsc or prefer_ntsc is None) else 50.0))
+                        env_s = dc_block(env_s, alpha=0.001)
+                        y_s = fir_lowpass(env_s.astype(np.complex64), sample_rate_hz, cutoff_hz=3_000_000, numtaps=129).real.astype(np.float32)
+                        # Use sync-tone metric for AFC decision
+                        m_ntsc = goertzel_power(y_s, sample_rate_hz, 15_734.0)
+                        m_pal = goertzel_power(y_s, sample_rate_hz, 15_625.0)
+                        q_s = max(m_ntsc, m_pal)
                         if q_s > best_q_local + 0.02:
                             best_q_local = q_s
                             best_df = df
@@ -493,7 +591,7 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--endpoint", default=os.environ.get("RER_FRAMES_ZMQ", "tcp://127.0.0.1:5556"))
     ap.add_argument("--topic", default=os.environ.get("RER_FRAMES_TOPIC", "frames"))
     ap.add_argument("--width", type=int, default=320)
-    ap.add_argument("--height", type=int, default=240)
+    ap.add_argument("--height", type=int, default=180)
     ap.add_argument("--fps", type=int, default=10)
     ap.add_argument("--ntsc", action="store_true", help="Prefer NTSC line rate (~15.734 kHz); default PAL (~15.625 kHz)")
     args = ap.parse_args(argv)
